@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Test script for Cartesia TTS with German voice (viktoria-german) and Deepgram fallback.
+Test script for Cartesia TTS with German voice (viktoria-german) and Deepgram fallback using LiveKit.
 
-This script tests the Cartesia TTS plugin with the following configuration:
+This script tests the Cartesia TTS with the following configuration:
 - Model: sonic-3-2025-10-27
 - Voice: viktoria-german (b9de4a89-2257-424b-94c2-db18ba68c81a)
 - Speed: 0.2
@@ -18,12 +18,14 @@ import sys
 from typing import Optional
 
 try:
-    from pipecat.services.cartesia import CartesiaTTSService
-    from pipecat.services.deepgram import DeepgramTTSService
-    from pipecat.frames.frames import TTSFrame, ErrorFrame
-except ImportError:
-    print("ERROR: Required pipecat modules not found.")
-    print("Please install pipecat: pip install pipecat-ai")
+    from livekit import agents
+    from livekit.agents import tts
+    from livekit.plugins import cartesia, deepgram
+except ImportError as e:
+    print("ERROR: Required LiveKit modules not found.")
+    print("Please install LiveKit agents and plugins:")
+    print("  pip install livekit-agents livekit-plugins-cartesia livekit-plugins-deepgram")
+    print(f"Import error: {e}")
     sys.exit(1)
 
 logging.basicConfig(
@@ -37,8 +39,8 @@ class TTSTester:
     """Test harness for TTS services with primary and fallback configuration."""
     
     def __init__(self):
-        self.primary_tts: Optional[CartesiaTTSService] = None
-        self.fallback_tts: Optional[DeepgramTTSService] = None
+        self.primary_tts: Optional[cartesia.TTS] = None
+        self.fallback_tts: Optional[deepgram.TTS] = None
         self.audio_frames_count = 0
         
     def initialize_cartesia_tts(self) -> bool:
@@ -51,10 +53,10 @@ class TTSTester:
             
             logger.info("Initializing Cartesia TTS with German voice configuration...")
             
-            self.primary_tts = CartesiaTTSService(
+            self.primary_tts = cartesia.TTS(
                 api_key=api_key,
                 model="sonic-3-2025-10-27",
-                voice_id="b9de4a89-2257-424b-94c2-db18ba68c81a",  # viktoria-german
+                voice="b9de4a89-2257-424b-94c2-db18ba68c81a",
                 language="de",
                 speed=0.2,
                 emotion=["positivity:highest", "curiosity:highest"]
@@ -84,7 +86,7 @@ class TTSTester:
             
             logger.info("Initializing Deepgram TTS fallback...")
             
-            self.fallback_tts = DeepgramTTSService(
+            self.fallback_tts = deepgram.TTS(
                 api_key=api_key,
                 model="aura-2-arcas-en"
             )
@@ -124,25 +126,30 @@ class TTSTester:
             logger.info(f"{'='*60}\n")
             
             self.audio_frames_count = 0
+            total_audio_bytes = 0
             
-            # Create a TTS frame
-            tts_frame = TTSFrame(text=text)
-            
-            # Process the frame through TTS service
             logger.info("Starting synthesis...")
             
-            async for frame in tts_service.process_frame(tts_frame):
-                if isinstance(frame, ErrorFrame):
-                    logger.error(f"Error frame received: {frame.error}")
-                    return False
-                elif hasattr(frame, 'audio'):
+            stream = tts_service.synthesize(text)
+            
+            async for event in stream:
+                if event.type == tts.SynthesisEventType.STARTED:
+                    logger.debug("Synthesis started")
+                elif event.type == tts.SynthesisEventType.AUDIO:
                     self.audio_frames_count += 1
-                    audio_data = frame.audio if hasattr(frame, 'audio') else None
-                    if audio_data:
-                        logger.debug(f"Audio frame {self.audio_frames_count}: {len(audio_data)} bytes")
+                    audio_data = event.audio
+                    if audio_data and audio_data.data:
+                        audio_bytes = len(audio_data.data)
+                        total_audio_bytes += audio_bytes
+                        logger.debug(f"Audio frame {self.audio_frames_count}: {audio_bytes} bytes")
+                elif event.type == tts.SynthesisEventType.FINISHED:
+                    logger.debug("Synthesis finished")
+                elif event.type == tts.SynthesisEventType.ERROR:
+                    logger.error(f"Synthesis error: {event.error}")
+                    return False
             
             if self.audio_frames_count > 0:
-                logger.info(f"\n✓ SUCCESS: Generated {self.audio_frames_count} audio frames")
+                logger.info(f"\n✓ SUCCESS: Generated {self.audio_frames_count} audio frames ({total_audio_bytes} bytes total)")
                 return True
             else:
                 logger.warning("\n✗ WARNING: No audio frames were generated")
@@ -155,13 +162,11 @@ class TTSTester:
     async def run_tests(self):
         """Run all TTS tests."""
         logger.info("="*60)
-        logger.info("Starting Cartesia German TTS Test")
+        logger.info("Starting Cartesia German TTS Test (LiveKit)")
         logger.info("="*60)
         
-        # Test text
         german_text = "Es freut mich, Sie kennenzulernen, Ich hoffe, Sie haben einen schönen Tag"
         
-        # Initialize services
         cartesia_ok = self.initialize_cartesia_tts()
         deepgram_ok = self.initialize_deepgram_fallback()
         
@@ -172,19 +177,16 @@ class TTSTester:
             'deepgram_synthesis': False
         }
         
-        # Test Cartesia TTS (primary)
         if cartesia_ok:
             results['cartesia_synthesis'] = await self.test_synthesis(german_text, use_fallback=False)
         else:
             logger.error("Skipping Cartesia synthesis test - initialization failed")
         
-        # Test Deepgram TTS (fallback) - always test if available
         if deepgram_ok:
             results['deepgram_synthesis'] = await self.test_synthesis(german_text, use_fallback=True)
         else:
             logger.warning("Skipping Deepgram fallback test - initialization failed")
         
-        # Print summary
         self.print_summary(results)
         
         return results
@@ -211,7 +213,6 @@ class TTSTester:
             logger.warning("✗ SOME TESTS FAILED")
         logger.info("="*60)
         
-        # Return exit code
         return 0 if all_passed else 1
 
 
@@ -220,7 +221,6 @@ async def main():
     tester = TTSTester()
     results = await tester.run_tests()
     
-    # Exit with appropriate code
     all_passed = all(results.values())
     sys.exit(0 if all_passed else 1)
 
