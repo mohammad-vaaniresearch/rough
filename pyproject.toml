@@ -1,0 +1,17 @@
+[project]
+name = "batch-llm-comparison"
+version = "1.0.0"
+description = "Batch processing comparison between OpenAI and Gemini APIs"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0.0",
+    "google-generativeai>=0.8.0",
+    "python-dotenv>=1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["batch_llm*"]
